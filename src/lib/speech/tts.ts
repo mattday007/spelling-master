@@ -3,11 +3,11 @@
  * then checks the IndexedDB audio cache (runtime-generated),
  * falling back to Web Speech API if neither exists.
  *
- * iOS Safari requirements:
- * - audio.play() must be called synchronously from a user gesture
- *   (no await/fetch before it)
- * - Reusing the same HTMLAudioElement keeps it "activated" across plays
- * - HTMLAudioElement plays on the media channel (works with mute switch)
+ * iOS Safari notes:
+ * - play() must be called from touchend/click/keydown handler
+ * - HTMLAudioElement plays on the media channel (not muted by silent switch)
+ * - iOS 17.4+ has unreliable media events (canplay, loadeddata, ended)
+ *   so we monitor currentTime and use timeouts as safety nets
  */
 
 import { getCachedAudio } from "@/lib/audio/audio-cache";
@@ -38,42 +38,82 @@ function getSharedAudio(): HTMLAudioElement {
 }
 
 /**
- * Play audio through the shared element. Sets src and calls play()
- * synchronously — no async gaps — so iOS Safari accepts the user gesture.
+ * Play audio through the shared element with timeout and playback monitoring.
+ * Resolves when audio finishes or after duration elapses.
+ * Rejects if play() is blocked or audio doesn't start within 2 seconds.
  */
 function playOnSharedElement(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const audio = getSharedAudio();
+    let settled = false;
+    let playbackStarted = false;
+    let maxTimer: ReturnType<typeof setTimeout> | null = null;
+    let checkTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const cleanup = () => {
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (maxTimer) clearTimeout(maxTimer);
+      if (checkTimer) clearTimeout(checkTimer);
       audio.onended = null;
       audio.onerror = null;
-    };
-
-    audio.onended = () => {
-      cleanup();
+      audio.ontimeupdate = null;
       resolve();
     };
 
-    audio.onerror = () => {
-      cleanup();
-      reject(new Error("audio-play-failed"));
+    const fail = (reason: string) => {
+      if (settled) return;
+      settled = true;
+      if (maxTimer) clearTimeout(maxTimer);
+      if (checkTimer) clearTimeout(checkTimer);
+      audio.pause();
+      audio.onended = null;
+      audio.onerror = null;
+      audio.ontimeupdate = null;
+      reject(new Error(reason));
     };
 
-    // Set src and play synchronously — critical for iOS gesture chain
+    audio.onended = finish;
+    audio.onerror = () => fail("audio-error");
+
+    // Monitor timeupdate to know audio is actually producing output
+    audio.ontimeupdate = () => {
+      if (!playbackStarted) {
+        playbackStarted = true;
+        // Audio is actually playing — set a max timer based on duration
+        const remaining = (audio.duration - audio.currentTime) * 1000;
+        if (isFinite(remaining) && remaining > 0) {
+          maxTimer = setTimeout(finish, remaining + 500);
+        }
+      }
+    };
+
     audio.src = src;
+
     const p = audio.play();
     if (p) {
-      p.catch((err) => {
-        cleanup();
-        reject(err);
+      p.then(() => {
+        // play() resolved — playback has started (or iOS claims it has).
+        // If we don't see timeupdate within 2s, audio isn't really playing.
+        checkTimer = setTimeout(() => {
+          if (!playbackStarted && !settled) {
+            fail("audio-no-playback");
+          }
+        }, 2000);
+
+        // Safety: even if events are broken, don't hang longer than 10s
+        if (!maxTimer) {
+          maxTimer = setTimeout(finish, 10_000);
+        }
+      }).catch((err) => {
+        fail(err?.message ?? "play-rejected");
       });
     }
   });
 }
 
 // ---------------------------------------------------------------------------
-// Web Speech API fallback (for custom words without pre-generated audio)
+// Web Speech API fallback
 // ---------------------------------------------------------------------------
 
 const PREFERRED_VOICES = [
@@ -133,8 +173,12 @@ function speakWithWebSpeechAPI(text: string): Promise<void> {
     utterance.pitch = 1;
     utterance.volume = 1;
 
-    utterance.onend = () => resolve();
+    // Safety timeout — iOS speechSynthesis can also hang
+    const timeout = setTimeout(() => resolve(), 5000);
+
+    utterance.onend = () => { clearTimeout(timeout); resolve(); };
     utterance.onerror = (e) => {
+      clearTimeout(timeout);
       if (e.error === "canceled") resolve();
       else reject(e);
     };
@@ -149,24 +193,26 @@ function speakWithWebSpeechAPI(text: string): Promise<void> {
 
 /**
  * Speak a word. Tries in order:
- * 1. Static pre-generated MP3 from /audio/ (direct URL — no fetch before play)
+ * 1. Static pre-generated MP3 from /audio/ (direct URL, no fetch before play)
  * 2. Runtime-generated MP3 from IndexedDB audio cache (blob URL)
  * 3. Web Speech API fallback
+ *
+ * Each step has timeouts to prevent isSpeaking from getting stuck.
  */
 export async function speak(text: string): Promise<void> {
   const filename = toAudioFilename(text);
 
-  // 1. Try static file — play directly via URL, no async gap before play()
+  // 1. Try static file — sets src and calls play() with no async gap
   if (filename) {
     try {
       await playOnSharedElement(`/audio/${filename}.mp3`);
       return;
     } catch {
-      // Static file not found or play blocked — continue
+      // Failed or timed out — continue to next method
     }
   }
 
-  // 2. Try cached audio from IndexedDB
+  // 2. Try cached audio from IndexedDB (blob URL has an async gap to create)
   try {
     const blob = await getCachedAudio(text);
     if (blob) {
@@ -184,7 +230,7 @@ export async function speak(text: string): Promise<void> {
     // Not cached — continue
   }
 
-  // 3. Fall back to Web Speech API
+  // 3. Fall back to Web Speech API (built into iOS, always works from gesture)
   await speakWithWebSpeechAPI(text);
 }
 
@@ -200,5 +246,5 @@ export function cancelSpeech() {
 }
 
 export function isTTSSupported(): boolean {
-  return true; // Audio API is universally supported
+  return true;
 }
