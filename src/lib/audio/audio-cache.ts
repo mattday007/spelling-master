@@ -1,44 +1,12 @@
 /**
  * Runtime audio generation and caching.
  *
- * When a parent adds a custom word, this module calls Google Cloud TTS
+ * When a parent adds a custom word, this module calls the /api/tts proxy
  * to generate an MP3 and stores it in the Dexie audioCache table.
  * When a word is removed, it cleans up orphaned cache entries.
  */
 
 import { db } from "@/db/database";
-
-const TTS_VOICE = {
-  languageCode: "en-AU",
-  name: "en-AU-Neural2-C",
-};
-
-const TTS_AUDIO_CONFIG = {
-  audioEncoding: "MP3" as const,
-  speakingRate: 0.9,
-};
-
-// ---------------------------------------------------------------------------
-// API key resolution
-// ---------------------------------------------------------------------------
-
-/**
- * Get the Google Cloud API key. Checks:
- * 1. NEXT_PUBLIC_GOOGLE_CLOUD_API_KEY env var (baked at build time)
- * 2. "googleCloudApiKey" app setting in Dexie (set by parent in dashboard)
- */
-export async function getApiKey(): Promise<string | null> {
-  const envKey = process.env.NEXT_PUBLIC_GOOGLE_CLOUD_API_KEY;
-  if (envKey) return envKey;
-
-  const setting = await db.appSettings.get("googleCloudApiKey");
-  if (setting?.value) {
-    const parsed = JSON.parse(setting.value);
-    if (typeof parsed === "string" && parsed.length > 0) return parsed;
-  }
-
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Audio filename helper (matches scripts/generate-audio.ts and tts.ts)
@@ -69,25 +37,19 @@ async function hasStaticAudio(text: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// TTS generation
+// TTS generation via server-side proxy
 // ---------------------------------------------------------------------------
 
-async function callGoogleTTS(text: string, apiKey: string): Promise<Blob> {
-  const url = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
-
-  const res = await fetch(url, {
+async function callTTSProxy(text: string): Promise<Blob> {
+  const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      input: { text },
-      voice: TTS_VOICE,
-      audioConfig: TTS_AUDIO_CONFIG,
-    }),
+    body: JSON.stringify({ text }),
   });
 
   if (!res.ok) {
     const error = await res.text();
-    throw new Error(`Google TTS API error: ${res.status} ${error}`);
+    throw new Error(`TTS proxy error: ${res.status} ${error}`);
   }
 
   const json = (await res.json()) as { audioContent: string };
@@ -107,7 +69,7 @@ async function callGoogleTTS(text: string, apiKey: string): Promise<Blob> {
  * Generate and cache audio for a word. Skips if:
  * - A static MP3 already exists in /audio/
  * - The word is already in the audioCache
- * - No API key is configured (fails silently)
+ * - The TTS proxy returns an error (fails silently)
  */
 export async function generateAndCacheAudio(wordText: string): Promise<void> {
   const text = wordText.trim().toLowerCase();
@@ -120,11 +82,8 @@ export async function generateAndCacheAudio(wordText: string): Promise<void> {
   // Static file exists?
   if (await hasStaticAudio(text)) return;
 
-  const apiKey = await getApiKey();
-  if (!apiKey) return; // No key configured — will fall back to Web Speech API at playback
-
   try {
-    const blob = await callGoogleTTS(wordText, apiKey);
+    const blob = await callTTSProxy(wordText);
     await db.audioCache.put({ word: text, blob, createdAt: new Date() });
   } catch (err) {
     console.warn(`Failed to generate audio for "${text}":`, err);

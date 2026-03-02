@@ -50,89 +50,14 @@ function PinGate({ onUnlock }: { onUnlock: () => void }) {
   );
 }
 
-function ApiKeySection() {
-  const savedKey = useAppSetting("googleCloudApiKey") as string | undefined;
-  const [editing, setEditing] = useState(false);
-  const [keyInput, setKeyInput] = useState("");
-  const hasEnvKey = !!process.env.NEXT_PUBLIC_GOOGLE_CLOUD_API_KEY;
-
-  const handleSave = async () => {
-    const trimmed = keyInput.trim();
-    if (trimmed) {
-      await setAppSetting("googleCloudApiKey", trimmed);
-    } else {
-      await db.appSettings.delete("googleCloudApiKey");
-    }
-    setEditing(false);
-    setKeyInput("");
-  };
-
-  if (hasEnvKey) {
-    return (
-      <Card className="w-full">
-        <h3 className="text-lg font-bold mb-2">Voice Generation</h3>
-        <p className="text-sm text-muted">
-          Google Cloud TTS API key is configured via environment variable.
-          Custom words will automatically get high-quality audio.
-        </p>
-      </Card>
-    );
-  }
-
+function VoiceStatusSection() {
   return (
     <Card className="w-full">
       <h3 className="text-lg font-bold mb-2">Voice Generation</h3>
-      {!editing ? (
-        <div className="space-y-2">
-          <p className="text-sm text-muted">
-            {savedKey
-              ? "Google Cloud TTS API key is configured. Custom words will get high-quality audio."
-              : "Add a Google Cloud TTS API key to generate high-quality audio for custom words."}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                setKeyInput(savedKey ?? "");
-                setEditing(true);
-              }}
-            >
-              {savedKey ? "Change Key" : "Add API Key"}
-            </Button>
-            {savedKey && (
-              <Button
-                size="sm"
-                variant="danger"
-                onClick={async () => {
-                  await db.appSettings.delete("googleCloudApiKey");
-                }}
-              >
-                Remove
-              </Button>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <input
-            type="password"
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            placeholder="Google Cloud API key"
-            className="w-full px-4 py-2 rounded-xl border-2 border-gray-200 font-mono text-sm focus:border-blue outline-none"
-            autoFocus
-          />
-          <div className="flex gap-2">
-            <Button size="sm" onClick={handleSave}>
-              Save
-            </Button>
-            <Button size="sm" variant="secondary" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
+      <p className="text-sm text-muted">
+        Google Cloud TTS is configured server-side. Custom words will
+        automatically get high-quality audio.
+      </p>
     </Card>
   );
 }
@@ -219,7 +144,7 @@ function ParentDashboard() {
         </Card>
       )}
 
-      <ApiKeySection />
+      <VoiceStatusSection />
     </div>
   );
 }
