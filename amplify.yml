@@ -6,6 +6,9 @@ frontend:
         - npm ci
     build:
       commands:
+        # Write server-side env vars to .env.production so the SSR Lambda can read them
+        - env | grep -e MYSCRIPT_ >> .env.production
+        - env | grep -e GOOGLE_CLOUD_ >> .env.production
         - npm run build
         # Amplify's Next.js adapter doesn't deploy public/ for Next.js 16.
         # Copy audio files into .next/static/ which IS deployed.
