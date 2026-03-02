@@ -7,16 +7,12 @@ frontend:
     build:
       commands:
         - npm run build
-        # Standalone output nests the project under the workspace root path.
-        # Find the actual server.js location and copy public/ + static/ there.
-        - export STANDALONE_DIR=$(dirname $(find .next/standalone -name "server.js" -not -path "*/node_modules/*" | head -1))
-        - cp -r public "$STANDALONE_DIR/public"
-        - cp -r .next/static "$STANDALONE_DIR/.next/static"
-        # Move contents to a flat output directory for Amplify
-        - mkdir -p .next/deploy
-        - cp -r "$STANDALONE_DIR"/. .next/deploy/
+        # Amplify's Next.js adapter doesn't deploy public/ for Next.js 16.
+        # Copy audio files into .next/static/ which IS deployed.
+        # The Next.js rewrite in next.config.ts maps /audio/* to /_next/static/audio/*
+        - cp -r public/audio .next/static/audio
   artifacts:
-    baseDirectory: .next/deploy
+    baseDirectory: .next
     files:
       - "**/*"
   cache:
