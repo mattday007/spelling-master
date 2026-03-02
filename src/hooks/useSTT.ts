@@ -6,13 +6,14 @@ import { isSTTSupported, createRecognition, getPreferredLang } from "@/lib/speec
 import type { STTResult } from "@/lib/speech/stt";
 
 /** Max time we'll listen before force-stopping (ms) */
-const MAX_LISTEN_MS = 8000;
+const MAX_LISTEN_MS = 6000;
 
 /**
  * After speechend fires, wait this long before calling stop().
  * Gives the recogniser time to finalise short utterances.
+ * Keep short for responsive feel on mobile.
  */
-const POST_SPEECH_DELAY_MS = 1500;
+const POST_SPEECH_DELAY_MS = 400;
 
 export function useSTT() {
   const [isListening, setIsListening] = useState(false);
@@ -41,8 +42,9 @@ export function useSTT() {
         return;
       }
 
-      // Use continuous mode so the browser doesn't auto-stop on short words
-      recognition.continuous = true;
+      // Non-continuous mode: browser auto-stops after a pause, producing
+      // final results faster. Much more responsive for single-word input.
+      recognition.continuous = false;
       recognition.interimResults = true;
 
       recognitionRef.current = recognition;

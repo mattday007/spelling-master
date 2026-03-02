@@ -2,7 +2,12 @@
  * Text-to-speech: plays pre-generated MP3s from /audio/{word}.mp3,
  * then checks the IndexedDB audio cache (runtime-generated),
  * falling back to Web Speech API if neither exists.
+ *
+ * Uses Web Audio API (AudioContext) for MP3 playback — this is
+ * reliable on iOS Safari where new Audio().play() silently fails.
  */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getCachedAudio } from "@/lib/audio/audio-cache";
 
@@ -19,45 +24,56 @@ function toAudioFilename(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Audio playback
+// Web Audio API playback (works on iOS Safari)
 // ---------------------------------------------------------------------------
 
-let currentAudio: HTMLAudioElement | null = null;
+let audioCtx: AudioContext | null = null;
+let currentSource: AudioBufferSourceNode | null = null;
 
-function playAudioUrl(url: string): Promise<void> {
+function getAudioContext(): AudioContext {
+  if (!audioCtx) {
+    const Ctor = window.AudioContext || (window as any).webkitAudioContext;
+    audioCtx = new Ctor();
+  }
+  return audioCtx;
+}
+
+async function playAudioBuffer(buffer: ArrayBuffer): Promise<void> {
+  const ctx = getAudioContext();
+  if (ctx.state === "suspended") await ctx.resume();
+
+  const audioBuffer = await ctx.decodeAudioData(buffer);
+
   return new Promise((resolve, reject) => {
-    const audio = new Audio(url);
-    currentAudio = audio;
-
-    audio.onended = () => {
-      currentAudio = null;
+    const source = ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+    source.onended = () => {
+      currentSource = null;
       resolve();
     };
-    audio.onerror = () => {
-      currentAudio = null;
-      reject(new Error("audio-play-failed"));
-    };
-
-    audio.play().catch((err) => {
-      currentAudio = null;
+    currentSource = source;
+    try {
+      source.start();
+    } catch (err) {
+      currentSource = null;
       reject(err);
-    });
+    }
   });
 }
 
-function playStaticMP3(filename: string): Promise<void> {
-  return playAudioUrl(`/audio/${filename}.mp3`);
+async function playStaticMP3(filename: string): Promise<void> {
+  const res = await fetch(`/audio/${filename}.mp3`);
+  if (!res.ok) throw new Error("not-found");
+  const buffer = await res.arrayBuffer();
+  await playAudioBuffer(buffer);
 }
 
 async function playCachedAudio(text: string): Promise<void> {
   const blob = await getCachedAudio(text);
   if (!blob) throw new Error("not-cached");
-  const url = URL.createObjectURL(blob);
-  try {
-    await playAudioUrl(url);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  const buffer = await blob.arrayBuffer();
+  await playAudioBuffer(buffer);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,10 +183,9 @@ export async function speak(text: string): Promise<void> {
 }
 
 export function cancelSpeech() {
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-    currentAudio = null;
+  if (currentSource) {
+    try { currentSource.stop(); } catch { /* already stopped */ }
+    currentSource = null;
   }
   if ("speechSynthesis" in window) {
     speechSynthesis.cancel();

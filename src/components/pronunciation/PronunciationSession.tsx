@@ -255,8 +255,8 @@ export function PronunciationSession({ profileId, wordListIds, difficulty, onFin
         />
         <p className="text-sm text-muted">
           {isListening
-            ? "Listening... say the word twice!"
-            : "Tap and say the word twice"}
+            ? "Listening... say the word!"
+            : "Tap and say the word"}
         </p>
       </div>
 
