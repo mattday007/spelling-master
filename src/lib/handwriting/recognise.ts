@@ -11,13 +11,17 @@ export interface CanvasStroke {
  * Send collected canvas strokes to the recognition proxy.
  * Returns the recognized text, or empty string if nothing was recognized.
  */
-export async function recogniseStrokes(strokes: CanvasStroke[]): Promise<string> {
+export async function recogniseStrokes(
+  strokes: CanvasStroke[],
+  canvasWidth = 800,
+  canvasHeight = 400,
+): Promise<string> {
   if (strokes.length === 0) return "";
 
   const res = await fetch("/api/recognise", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ strokes, width: 800, height: 400 }),
+    body: JSON.stringify({ strokes, width: canvasWidth, height: canvasHeight }),
   });
 
   if (!res.ok) {

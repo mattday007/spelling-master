@@ -88,7 +88,11 @@ function playOnSharedElement(src: string): Promise<void> {
       }
     };
 
+    // Reset position so replaying the same src works on iOS
+    audio.pause();
+    audio.currentTime = 0;
     audio.src = src;
+    audio.load();
 
     const p = audio.play();
     if (p) {
@@ -200,6 +204,12 @@ function speakWithWebSpeechAPI(text: string): Promise<void> {
  * Each step has timeouts to prevent isSpeaking from getting stuck.
  */
 export async function speak(text: string): Promise<void> {
+  // Global safety: never hang longer than 8 seconds total
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 8000));
+  await Promise.race([speakInternal(text), timeout]);
+}
+
+async function speakInternal(text: string): Promise<void> {
   const filename = toAudioFilename(text);
 
   // 1. Try static file — sets src and calls play() with no async gap

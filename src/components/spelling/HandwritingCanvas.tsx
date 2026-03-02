@@ -164,7 +164,10 @@ export function HandwritingCanvas({ onRecognised, disabled = false }: Handwritin
     if (strokes.length > 0) {
       setRecognising(true);
       try {
-        const recognised = await recogniseStrokes(strokes);
+        const canvas = canvasRef.current;
+        const w = canvas?.width ?? 800;
+        const h = canvas?.height ?? 400;
+        const recognised = await recogniseStrokes(strokes, w, h);
         onRecognised(recognised || "");
       } catch (err) {
         console.warn("Handwriting recognition failed:", err);
