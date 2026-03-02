@@ -4,7 +4,12 @@
  * falling back to Web Speech API if neither exists.
  *
  * Uses Web Audio API (AudioContext) for MP3 playback — this is
- * reliable on iOS Safari where new Audio().play() silently fails.
+ * reliable on iOS Safari where HTMLAudioElement.play() silently fails.
+ *
+ * iOS Safari requires AudioContext to be created AND resumed during a
+ * synchronous user-gesture call stack. We handle this by:
+ * 1. Unlocking on the first touch/click anywhere on the page
+ * 2. Calling resume() synchronously at the top of speak(), before any await
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -24,7 +29,7 @@ function toAudioFilename(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Web Audio API playback (works on iOS Safari)
+// Web Audio API — iOS-safe AudioContext management
 // ---------------------------------------------------------------------------
 
 let audioCtx: AudioContext | null = null;
@@ -38,10 +43,49 @@ function getAudioContext(): AudioContext {
   return audioCtx;
 }
 
+/**
+ * Must be called synchronously during a user gesture (before any await).
+ * Creates the AudioContext if needed, resumes it if suspended, and plays
+ * a tiny silent buffer to fully unlock audio on iOS Safari.
+ */
+function ensureAudioUnlocked(): void {
+  const ctx = getAudioContext();
+  if (ctx.state === "suspended") {
+    ctx.resume();
+  }
+  // Play a silent buffer — this is the standard iOS audio unlock trick.
+  // Without this, some iOS versions keep the context "running" but muted.
+  try {
+    const silent = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = silent;
+    src.connect(ctx.destination);
+    src.start();
+  } catch {
+    // Ignore — worst case audio unlock didn't work this time
+  }
+}
+
+// Unlock audio on the very first user interaction with the page.
+// This covers cases where speak() isn't the first thing called.
+if (typeof document !== "undefined") {
+  const unlock = () => {
+    ensureAudioUnlocked();
+    document.removeEventListener("touchstart", unlock, true);
+    document.removeEventListener("touchend", unlock, true);
+    document.removeEventListener("click", unlock, true);
+  };
+  document.addEventListener("touchstart", unlock, true);
+  document.addEventListener("touchend", unlock, true);
+  document.addEventListener("click", unlock, true);
+}
+
+// ---------------------------------------------------------------------------
+// Audio playback
+// ---------------------------------------------------------------------------
+
 async function playAudioBuffer(buffer: ArrayBuffer): Promise<void> {
   const ctx = getAudioContext();
-  if (ctx.state === "suspended") await ctx.resume();
-
   const audioBuffer = await ctx.decodeAudioData(buffer);
 
   return new Promise((resolve, reject) => {
@@ -158,6 +202,11 @@ function speakWithWebSpeechAPI(text: string): Promise<void> {
  * 3. Web Speech API fallback
  */
 export async function speak(text: string): Promise<void> {
+  // IMPORTANT: unlock/resume AudioContext synchronously during the user
+  // gesture, BEFORE any await. iOS Safari revokes gesture privilege after
+  // the first async gap.
+  ensureAudioUnlocked();
+
   const filename = toAudioFilename(text);
 
   // 1. Try static file
