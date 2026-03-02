@@ -85,12 +85,8 @@ export function SpellingSession({ profileId, wordListIds, difficulty, onFinish }
     startedAt: new Date(),
   });
 
-  useEffect(() => {
-    if (currentWord && state.phase === "prompting") {
-      const timer = setTimeout(() => speakWord(currentWord.text), 500);
-      return () => clearTimeout(timer);
-    }
-  }, [currentWord, state.phase, speakWord]);
+  // Auto-play is skipped — iOS Safari only allows audio from direct user
+  // gestures. The child taps the speaker button to hear the word.
 
   useEffect(() => {
     if (isComplete && !sessionSaved.current) {
