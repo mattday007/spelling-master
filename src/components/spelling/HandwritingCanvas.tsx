@@ -124,25 +124,60 @@ export function HandwritingCanvas({ onRecognised, disabled = false }: Handwritin
     prevDisabledRef.current = disabled;
   }, [disabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handlePointerDown = (e: React.TouchEvent | React.MouseEvent) => {
+  const handlePointerDown = useCallback((e: React.TouchEvent | React.MouseEvent) => {
     if (disabled) return;
     const point = getPoint(e);
     setCurrentStroke([point]);
-  };
+  }, [disabled, getPoint]);
 
-  const handlePointerMove = (e: React.TouchEvent | React.MouseEvent) => {
-    if (!currentStroke || disabled) return;
-    const point = getPoint(e);
-    setCurrentStroke((prev) => (prev ? [...prev, point] : null));
-  };
+  const handlePointerMove = useCallback((e: React.TouchEvent | React.MouseEvent) => {
+    if (disabled) return;
+    setCurrentStroke((prev) => {
+      if (!prev) return null;
+      const point = getPoint(e);
+      return [...prev, point];
+    });
+  }, [disabled, getPoint]);
 
-  const handlePointerUp = () => {
-    if (!currentStroke || disabled) return;
-    setStrokes((prev) => [...prev, { points: currentStroke }]);
-    setCurrentStroke(null);
-
+  const handlePointerUp = useCallback(() => {
+    setCurrentStroke((prev) => {
+      if (!prev) return null;
+      setStrokes((s) => [...s, { points: prev }]);
+      return null;
+    });
     if (recogniseTimeoutRef.current) clearTimeout(recogniseTimeoutRef.current);
-  };
+  }, []);
+
+  // Attach non-passive touch listeners so preventDefault() works on iOS.
+  // This stops the stylus from triggering text selection, scrolling, or
+  // accidentally selecting surrounding UI elements.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      handlePointerDown(e as unknown as React.TouchEvent);
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      handlePointerMove(e as unknown as React.TouchEvent);
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      handlePointerUp();
+    };
+
+    canvas.addEventListener("touchstart", onTouchStart, { passive: false });
+    canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+    canvas.addEventListener("touchend", onTouchEnd, { passive: false });
+
+    return () => {
+      canvas.removeEventListener("touchstart", onTouchStart);
+      canvas.removeEventListener("touchmove", onTouchMove);
+      canvas.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [handlePointerDown, handlePointerMove, handlePointerUp]);
 
   const clear = () => {
     setStrokes([]);
@@ -182,19 +217,16 @@ export function HandwritingCanvas({ onRecognised, disabled = false }: Handwritin
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className="w-full space-y-3"
+      className="w-full space-y-3 select-none"
     >
       <div className="relative glass-card overflow-hidden">
         <canvas
           ref={canvasRef}
-          className="w-full h-48 sm:h-56 handwriting-canvas cursor-crosshair"
+          className="w-full h-48 sm:h-56 handwriting-canvas cursor-crosshair touch-none select-none"
           onMouseDown={handlePointerDown}
           onMouseMove={handlePointerMove}
           onMouseUp={handlePointerUp}
           onMouseLeave={handlePointerUp}
-          onTouchStart={handlePointerDown}
-          onTouchMove={handlePointerMove}
-          onTouchEnd={handlePointerUp}
         />
         {strokes.length === 0 && !currentStroke && !recognising && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

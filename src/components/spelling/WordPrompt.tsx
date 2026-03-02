@@ -14,7 +14,7 @@ export function WordPrompt({ onHear, isSpeaking, hint }: WordPromptProps) {
     <motion.div
       initial={{ opacity: 0, scale: 0.9 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="flex flex-col items-center gap-4"
+      className="flex flex-col items-center gap-4 select-none"
     >
       <p className="text-lg text-muted font-semibold">Listen to the word, then spell it!</p>
 
