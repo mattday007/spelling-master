@@ -52,7 +52,6 @@ export function useSTT() {
 
       let settled = false;
       let lastInterimTranscript = "";
-      let hasSpeechEnded = false;
 
       const finish = (result: STTResult) => {
         if (settled) return;
@@ -141,7 +140,6 @@ export function useSTT() {
 
       recognition.onspeechend = () => {
         console.log("[STT] Speech ended");
-        hasSpeechEnded = true;
         // Give the recogniser time to finalise, then stop gracefully.
         // stop() forces it to emit a final result for any buffered audio.
         const t = setTimeout(() => {
