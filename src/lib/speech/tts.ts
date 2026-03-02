@@ -3,16 +3,12 @@
  * then checks the IndexedDB audio cache (runtime-generated),
  * falling back to Web Speech API if neither exists.
  *
- * Uses Web Audio API (AudioContext) for MP3 playback — this is
- * reliable on iOS Safari where HTMLAudioElement.play() silently fails.
- *
- * iOS Safari requires AudioContext to be created AND resumed during a
- * synchronous user-gesture call stack. We handle this by:
- * 1. Unlocking on the first touch/click anywhere on the page
- * 2. Calling resume() synchronously at the top of speak(), before any await
+ * iOS Safari requirements:
+ * - audio.play() must be called synchronously from a user gesture
+ *   (no await/fetch before it)
+ * - Reusing the same HTMLAudioElement keeps it "activated" across plays
+ * - HTMLAudioElement plays on the media channel (works with mute switch)
  */
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getCachedAudio } from "@/lib/audio/audio-cache";
 
@@ -29,95 +25,51 @@ function toAudioFilename(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Web Audio API — iOS-safe AudioContext management
+// Single reusable Audio element
 // ---------------------------------------------------------------------------
 
-let audioCtx: AudioContext | null = null;
-let currentSource: AudioBufferSourceNode | null = null;
+let sharedAudio: HTMLAudioElement | null = null;
 
-function getAudioContext(): AudioContext {
-  if (!audioCtx) {
-    const Ctor = window.AudioContext || (window as any).webkitAudioContext;
-    audioCtx = new Ctor();
+function getSharedAudio(): HTMLAudioElement {
+  if (!sharedAudio) {
+    sharedAudio = new Audio();
   }
-  return audioCtx;
+  return sharedAudio;
 }
 
 /**
- * Must be called synchronously during a user gesture (before any await).
- * Creates the AudioContext if needed, resumes it if suspended, and plays
- * a tiny silent buffer to fully unlock audio on iOS Safari.
+ * Play audio through the shared element. Sets src and calls play()
+ * synchronously — no async gaps — so iOS Safari accepts the user gesture.
  */
-function ensureAudioUnlocked(): void {
-  const ctx = getAudioContext();
-  if (ctx.state === "suspended") {
-    ctx.resume();
-  }
-  // Play a silent buffer — this is the standard iOS audio unlock trick.
-  // Without this, some iOS versions keep the context "running" but muted.
-  try {
-    const silent = ctx.createBuffer(1, 1, 22050);
-    const src = ctx.createBufferSource();
-    src.buffer = silent;
-    src.connect(ctx.destination);
-    src.start();
-  } catch {
-    // Ignore — worst case audio unlock didn't work this time
-  }
-}
-
-// Unlock audio on the very first user interaction with the page.
-// This covers cases where speak() isn't the first thing called.
-if (typeof document !== "undefined") {
-  const unlock = () => {
-    ensureAudioUnlocked();
-    document.removeEventListener("touchstart", unlock, true);
-    document.removeEventListener("touchend", unlock, true);
-    document.removeEventListener("click", unlock, true);
-  };
-  document.addEventListener("touchstart", unlock, true);
-  document.addEventListener("touchend", unlock, true);
-  document.addEventListener("click", unlock, true);
-}
-
-// ---------------------------------------------------------------------------
-// Audio playback
-// ---------------------------------------------------------------------------
-
-async function playAudioBuffer(buffer: ArrayBuffer): Promise<void> {
-  const ctx = getAudioContext();
-  const audioBuffer = await ctx.decodeAudioData(buffer);
-
+function playOnSharedElement(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    source.onended = () => {
-      currentSource = null;
+    const audio = getSharedAudio();
+
+    const cleanup = () => {
+      audio.onended = null;
+      audio.onerror = null;
+    };
+
+    audio.onended = () => {
+      cleanup();
       resolve();
     };
-    currentSource = source;
-    try {
-      source.start();
-    } catch (err) {
-      currentSource = null;
-      reject(err);
+
+    audio.onerror = () => {
+      cleanup();
+      reject(new Error("audio-play-failed"));
+    };
+
+    // Set src and play synchronously — critical for iOS gesture chain
+    audio.src = src;
+    const p = audio.play();
+    if (p) {
+      p.catch((err) => {
+        cleanup();
+        reject(err);
+      });
     }
   });
-}
-
-async function playStaticMP3(filename: string): Promise<void> {
-  const res = await fetch(`/audio/${filename}.mp3`);
-  if (!res.ok) throw new Error("not-found");
-  const buffer = await res.arrayBuffer();
-  await playAudioBuffer(buffer);
-}
-
-async function playCachedAudio(text: string): Promise<void> {
-  const blob = await getCachedAudio(text);
-  if (!blob) throw new Error("not-cached");
-  const buffer = await blob.arrayBuffer();
-  await playAudioBuffer(buffer);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,32 +149,37 @@ function speakWithWebSpeechAPI(text: string): Promise<void> {
 
 /**
  * Speak a word. Tries in order:
- * 1. Static pre-generated MP3 from /audio/
- * 2. Runtime-generated MP3 from IndexedDB audio cache
+ * 1. Static pre-generated MP3 from /audio/ (direct URL — no fetch before play)
+ * 2. Runtime-generated MP3 from IndexedDB audio cache (blob URL)
  * 3. Web Speech API fallback
  */
 export async function speak(text: string): Promise<void> {
-  // IMPORTANT: unlock/resume AudioContext synchronously during the user
-  // gesture, BEFORE any await. iOS Safari revokes gesture privilege after
-  // the first async gap.
-  ensureAudioUnlocked();
-
   const filename = toAudioFilename(text);
 
-  // 1. Try static file
+  // 1. Try static file — play directly via URL, no async gap before play()
   if (filename) {
     try {
-      await playStaticMP3(filename);
+      await playOnSharedElement(`/audio/${filename}.mp3`);
       return;
     } catch {
-      // Static file not found — continue
+      // Static file not found or play blocked — continue
     }
   }
 
   // 2. Try cached audio from IndexedDB
   try {
-    await playCachedAudio(text);
-    return;
+    const blob = await getCachedAudio(text);
+    if (blob) {
+      const url = URL.createObjectURL(blob);
+      try {
+        await playOnSharedElement(url);
+        return;
+      } catch {
+        // Play failed — continue
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
   } catch {
     // Not cached — continue
   }
@@ -232,9 +189,10 @@ export async function speak(text: string): Promise<void> {
 }
 
 export function cancelSpeech() {
-  if (currentSource) {
-    try { currentSource.stop(); } catch { /* already stopped */ }
-    currentSource = null;
+  const audio = sharedAudio;
+  if (audio) {
+    audio.pause();
+    audio.currentTime = 0;
   }
   if ("speechSynthesis" in window) {
     speechSynthesis.cancel();
