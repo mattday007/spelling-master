@@ -1,36 +1,139 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Spelling Master
+
+A Next.js app teaching NZ/UK spelling and pronunciation to children (ages 5-12). iPad-first with stylus support for handwriting recognition. All user data stored client-side in IndexedDB via Dexie.js.
+
+## Tech Stack
+
+- **Framework**: Next.js 16 (App Router, SSR mode)
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS 4, Framer Motion
+- **Database**: Dexie.js 4 (IndexedDB, client-side)
+- **Handwriting**: MyScript iink REST API (server-side proxy)
+- **TTS**: Pre-generated Google Cloud TTS MP3s + Web Speech API fallback
+- **STT**: Web Speech API (pronunciation mode)
+- **Deployment**: AWS Amplify (SSR)
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Environment Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Create a `.env.local` file with:
 
-## Learn More
+```
+MYSCRIPT_APPLICATION_KEY=<your-key>
+MYSCRIPT_HMAC_KEY=<your-key>
+MYSCRIPT_SERVER_URL=https://cloud.myscript.com
+GOOGLE_CLOUD_API_KEY=<your-key>
+```
 
-To learn more about Next.js, take a look at the following resources:
+These are **server-side only** (no `NEXT_PUBLIC_` prefix). They are used by API route proxies in `src/app/api/`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Pre-generated Audio
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+~658 preset word MP3s live in `public/audio/`. To regenerate:
 
-## Deploy on Vercel
+```bash
+npm run generate-audio
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Requires `GOOGLE_CLOUD_API_KEY` in environment. The script is incremental and skips existing files.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Architecture
+
+### API Route Proxies
+
+API keys are kept server-side via Next.js API routes:
+
+| Route | Purpose | External API |
+|-------|---------|-------------|
+| `POST /api/tts` | Text-to-speech generation | Google Cloud TTS |
+| `POST /api/recognise` | Handwriting recognition | MyScript iink REST v4.0 |
+
+The TTS proxy is used for runtime audio generation of custom words. Pre-generated audio for preset words is served as static MP3 files.
+
+### TTS Playback Chain
+
+`speak(text)` in `src/lib/speech/tts.ts` tries sources in order:
+1. **Static MP3** from `/audio/{word}.mp3`
+2. **Cached audio** from IndexedDB (runtime-generated via `/api/tts`)
+3. **Web Speech API** fallback (NZ/AU/UK voice priority)
+
+### iOS Safari Considerations
+
+- Audio `play()` must be called from a user gesture handler (touchend/click/keydown)
+- HTMLAudioElement must be reset (`currentTime = 0`, `load()`) before replaying the same source
+- Global 8-second safety timeout prevents `isSpeaking` from getting permanently stuck
+- SpeechRecognition uses non-continuous mode for faster single-word results
+
+### Project Structure
+
+```
+src/
+  app/
+    api/tts/route.ts          # TTS proxy
+    api/recognise/route.ts     # Handwriting recognition proxy
+    parent/page.tsx            # PIN-gated parent dashboard
+    play/spelling/page.tsx     # Spelling practice
+    play/pronunciation/page.tsx # Pronunciation practice
+  components/
+    spelling/SpellingSession.tsx
+    spelling/HandwritingCanvas.tsx
+    pronunciation/PronunciationSession.tsx
+  lib/
+    speech/tts.ts              # Three-tier TTS playback
+    speech/stt.ts              # Web Speech API wrapper
+    audio/audio-cache.ts       # Runtime TTS generation + IndexedDB cache
+    handwriting/recognise.ts   # Client for /api/recognise proxy
+    scoring/                   # Levenshtein (spelling), transcript match (pronunciation)
+  db/
+    database.ts                # Dexie schema
+    word-lists.ts              # Preset word list data
+    seed.ts                    # First-load seeding
+  hooks/
+    useTTS.ts                  # React hook wrapping tts.ts
+    useSTT.ts                  # React hook for speech recognition
+```
+
+## Deployment (AWS Amplify)
+
+Deployed as a Next.js SSR app on AWS Amplify.
+
+### Environment Variables on Amplify
+
+**Important**: Amplify does not automatically pass console environment variables to the SSR Lambda runtime. The `amplify.yml` build spec writes them to `.env.production` before the build:
+
+```yaml
+build:
+  commands:
+    - env | grep -e MYSCRIPT_ >> .env.production
+    - env | grep -e GOOGLE_CLOUD_ >> .env.production
+    - npm run build
+```
+
+Required Amplify Console environment variables:
+- `MYSCRIPT_APPLICATION_KEY`
+- `MYSCRIPT_HMAC_KEY`
+- `MYSCRIPT_SERVER_URL`
+- `GOOGLE_CLOUD_API_KEY`
+
+### Audio File Deployment
+
+Amplify's Next.js adapter (for Next.js 16) does not deploy the `public/` directory for SSR apps. Audio files are handled via:
+
+1. `amplify.yml` copies `public/audio/` into `.next/static/audio/` during build
+2. `next.config.ts` rewrites `/audio/*` to `/_next/static/audio/*`
+3. Audio files are committed to git (not gitignored)
+
+### Build Configuration
+
+See `amplify.yml` for the full build spec. Key points:
+- `baseDirectory: .next` (SSR mode, not static export)
+- Audio files copied to `.next/static/audio/` post-build
+- `node_modules` and `.next/cache` are cached between builds
